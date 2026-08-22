@@ -1,0 +1,6 @@
+# 解析结果（大文件，不入库）
+output/
+
+# Python 缓存
+__pycache__/
+*.pyc
