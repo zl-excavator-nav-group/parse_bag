@@ -12,8 +12,11 @@
 各消息类型的列（均不含第一列时间戳）：
 - IMU（sensor_msgs/Imu）：acc_x/y/z, gyro_x/y/z；
   加速度统一换算到 m/s^2（livox 驱动的 acc 单位是 g，会自动 ×9.80665）。
-- Livox 点云（CustomMsg）：header 时间(s)、timebase(ns)、point_num、lidar_id；
-  只导出元信息（不含点云本体），且第一列是 header 时间而非 bag 接收时间。
+- 点云（Livox CustomMsg / sensor_msgs/PointCloud2）：写元信息 txt（CustomMsg 为
+  header 时间/timebase/point_num/lidar_id，第一列是 header 时间）。
+- 点云 / 图像按帧 dump（受脚本顶部 DUMP_MEDIA 一键开关 + POINTCLOUD_TOPICS /
+  IMAGE_TOPICS + DUMP_START_TIME/DUMP_END_TIME 控制）：点云额外存 .pcd，图像存
+  .jpg/.png（DUMP_IMG_FORMAT 选格式），文件名用 header.stamp（秒.纳秒）。
 - GPS 经纬度（Gpgga / GnssPosMsg）：lat, lon, alt。
 - GinsPvaMsg：lat, lon, alt, roll, pitch, yaw, vel_e, vel_n, vel_u, vel_yaw；
   同时把经纬度/姿态转到 UTM 坐标系，额外生成 <name>_utm.txt（车身 yaw）、
@@ -35,6 +38,10 @@
     python3 parse_bag.py --keywords gnss,imu,encoder,gps
     python3 parse_bag.py --header          # 写表头行
     python3 parse_bag.py --list-topics
+    # 点云/图像按帧 dump：在脚本顶部设 DUMP_MEDIA=True、POINTCLOUD_TOPICS/IMAGE_TOPICS、
+    # DUMP_START_TIME/DUMP_END_TIME 后直接运行；也可用命令行覆盖：
+    python3 parse_bag.py --dump-media --pointcloud-topics /livox/lidar_192_168_1_158 \
+        --image-topics /cam0/image_raw/compressed --start-time 1787218155 --end-time 1787218160
 """
 
 import argparse
@@ -63,12 +70,14 @@ except Exception:
     utils = None
 
 # ======================== 配置（按需修改） ========================
-BAG_PATH = "/home/chenchen/Data/0820_data/rosbag2_2026_08_20-09_29_15/"
+BAG_PATH = "/home/chenchen/Data/0820_data/rosbag2_2026_08_20-09_29_15"
 OUTPUT_DIR = "/home/chenchen/code/parse_bag/output"
 
 # topic 名（小写）包含任一关键字才解析；留空表示全部解析
 # 点云 topic 名含 "lidar"（如 /livox/lidar_192_168_1_158），故加入 "lidar"
-KEYWORDS = ["gnss", "imu", "encoder", "gps", "lidar_192_168_1_158"]
+# KEYWORDS = ["gnss", "imu", "encoder", "gps", "lidar_192_168_1_158"]
+KEYWORDS = ["gnss", "imu", "encoder", "gps"]
+
 
 # 是否写表头行（列名 + 单位）；默认 False（不带表头），可用 --header 打开
 WRITE_HEADER = False
@@ -81,6 +90,21 @@ ACC_UNIT_TO_MPS2 = {
     "livox": 9.80665,
 }
 DEFAULT_ACC_SCALE = 1.0
+
+# ---- 点云 / 图像按帧 dump 配置 ----
+# 一键开关：True 时按帧 dump 点云(.pcd)/图像(.jpg/.png)；False 时点云仍写元信息 txt、图像不导出
+DUMP_MEDIA = True
+
+# 要 dump 的点云 / 图像 topic 名（精确匹配；留空则该类不 dump）
+POINTCLOUD_TOPICS = ["/livox/lidar_192_168_1_158"]   # 例: ["/livox/lidar_192_168_1_158"]
+IMAGE_TOPICS = []        # 例: ["/cam0/image_raw/compressed"]
+
+# dump 时间范围（秒，epoch，可含小数），按消息 header.stamp 过滤；None 表示不限
+DUMP_START_TIME = 1787218244
+DUMP_END_TIME = 1787218245
+
+# 图像输出格式：jpg / png
+DUMP_IMG_FORMAT = "jpg"
 # ==================================================================
 
 
@@ -406,12 +430,204 @@ def sanitize_topic_name(topic):
 
 
 def detect_storage_id(bag_dir):
-    meta = Path(bag_dir) / "metadata.yaml"
+    bag_dir = Path(bag_dir)
+    meta = bag_dir / "metadata.yaml"
     if meta.exists():
-        m = re.search(r"storage_identifier:\s*(\S+)", meta.read_text(errors="ignore"))
+        # 有的 bag 的 storage_identifier 是空字符串 ""，这里容错：剥掉引号后若为空则走兜底
+        m = re.search(r"storage_identifier:\s*(.*)", meta.read_text(errors="ignore"))
         if m:
-            return m.group(1)
+            sid = m.group(1).strip().strip("'\"")
+            if sid:
+                return sid
+    # 兜底：按 bag 目录内的文件后缀判断（.mcap -> mcap，否则 sqlite3）
+    if any(bag_dir.glob("*.mcap")):
+        return "mcap"
     return "sqlite3"
+
+
+# ---- 二进制 dump（点云 -> .pcd，图像 -> .png/.jpg） ----
+
+# 按帧落盘成独立文件的类型：这些 topic 不写文本，而是每帧一个文件。
+POINTCLOUD_TYPES = {
+    "livox_ros_driver2/msg/CustomMsg",
+    "sensor_msgs/msg/PointCloud2",
+}
+IMAGE_TYPES = {
+    "sensor_msgs/msg/Image",
+    "sensor_msgs/msg/CompressedImage",
+}
+
+# PointField.datatype -> numpy 小端 dtype
+_PCD_FIELD_DTYPES = {
+    1: "<i1", 2: "<u1", 3: "<i2", 4: "<u2",
+    5: "<i4", 6: "<u4", 7: "<f4", 8: "<f8",
+}
+
+
+def parse_time_arg(s):
+    """把 '秒' / '秒.纳秒' 字符串转成整纳秒；None 或空表示不限。"""
+    if s is None:
+        return None
+    s = str(s).strip()
+    if not s:
+        return None
+    return int(round(float(s) * 1_000_000_000))
+
+
+def header_stamp_ns(msg):
+    """消息 header.stamp -> 整纳秒。"""
+    stamp = msg.header.stamp
+    return int(stamp.sec) * 1_000_000_000 + int(stamp.nanosec)
+
+
+def custom_msg_to_pcd(msg):
+    """Livox CustomMsg -> PCD 二进制字节（x y z intensity，intensity=reflectivity）。"""
+    import numpy as np
+
+    points = msg.points
+    n = len(points)
+    arr = np.zeros((n, 4), dtype="<f4")
+    for i, p in enumerate(points):
+        arr[i] = (p.x, p.y, p.z, p.reflectivity)
+
+    header = (
+        "# .PCD v0.7 - Point Cloud Data file format\n"
+        "VERSION 0.7\n"
+        "FIELDS x y z intensity\n"
+        "SIZE 4 4 4 4\n"
+        "TYPE F F F F\n"
+        "COUNT 1 1 1 1\n"
+        f"WIDTH {n}\n"
+        "HEIGHT 1\n"
+        "VIEWPOINT 0 0 0 1 0 0 0\n"
+        f"POINTS {n}\n"
+        "DATA binary\n"
+    )
+    return header.encode("ascii") + arr.tobytes()
+
+
+def pointcloud2_to_pcd(msg):
+    """sensor_msgs/PointCloud2 -> PCD 二进制字节（x y z intensity，缺 intensity 则置 0）。"""
+    import numpy as np
+
+    step = int(msg.point_step)
+    n = int(msg.width) * int(msg.height)
+    buf = np.frombuffer(bytes(msg.data), dtype=np.uint8)
+    if step <= 0 or n <= 0:
+        n = 0
+    elif len(buf) < step * n:
+        n = len(buf) // step
+    mat = buf.reshape(n, step) if n else np.zeros((0, step), dtype=np.uint8)
+
+    def extract(name):
+        for f in msg.fields:
+            if f.name != name or f.count < 1:
+                continue
+            dt = np.dtype(_PCD_FIELD_DTYPES.get(f.datatype))
+            if dt is None:
+                return None
+            size = dt.itemsize * f.count
+            col = mat[:, f.offset:f.offset + size]
+            return np.ascontiguousarray(col).view(dt).reshape(n)[:].astype("<f4")
+        return None
+
+    names = ["x", "y", "z"]
+    cols = [extract("x"), extract("y"), extract("z")]
+    if extract("intensity") is not None:
+        names.append("intensity")
+        cols.append(extract("intensity"))
+    cols = [c if c is not None else np.zeros(n, dtype="<f4") for c in cols]
+    arr = np.stack(cols, axis=1) if n else np.zeros((0, len(names)), dtype="<f4")
+
+    header = (
+        "# .PCD v0.7 - Point Cloud Data file format\n"
+        "VERSION 0.7\n"
+        "FIELDS " + " ".join(names) + "\n"
+        + "SIZE " + " ".join(["4"] * len(names)) + "\n"
+        + "TYPE " + " ".join(["F"] * len(names)) + "\n"
+        + "COUNT " + " ".join(["1"] * len(names)) + "\n"
+        + f"WIDTH {n}\n"
+        "HEIGHT 1\n"
+        "VIEWPOINT 0 0 0 1 0 0 0\n"
+        + f"POINTS {n}\n"
+        "DATA binary\n"
+    )
+    return header.encode("ascii") + arr.tobytes()
+
+
+def compressed_image_to_bytes(msg, prefer):
+    """CompressedImage -> (bytes, 扩展名)。源格式与目标一致时直接复制，否则解码重编码。"""
+    import cv2
+    import numpy as np
+
+    fmt = (getattr(msg, "format", "") or "").lower()
+    raw = bytes(msg.data)
+    if prefer == "jpg" and fmt in ("jpeg", "jpg"):
+        return raw, ".jpg"
+    if prefer == "png" and fmt == "png":
+        return raw, ".png"
+
+    img = cv2.imdecode(np.frombuffer(raw, np.uint8), cv2.IMREAD_COLOR)
+    if img is None:
+        raise ValueError(f"无法解码压缩图像 (format={fmt})")
+    ext = ".jpg" if prefer == "jpg" else ".png"
+    ok, buf = cv2.imencode(ext, img)
+    if not ok:
+        raise ValueError(f"编码为 {ext} 失败")
+    return buf.tobytes(), ext
+
+
+def raw_image_to_bytes(msg, prefer):
+    """sensor_msgs/Image -> (bytes, 扩展名)。"""
+    import cv2
+    from cv_bridge import CvBridge
+
+    img = CvBridge().imgmsg_to_cv2(msg, desired_encoding="bgr8")
+    ext = ".jpg" if prefer == "jpg" else ".png"
+    ok, buf = cv2.imencode(ext, img)
+    if not ok:
+        raise ValueError(f"编码为 {ext} 失败")
+    return buf.tobytes(), ext
+
+
+def dump_media_message(msg, ttype, topic, out_dir, start_ns, end_ns, img_format,
+                       media_counts, warn_once):
+    """把一帧点云/图像落盘到 <out_dir>/<topic名>/<header.stamp>.<ext>；返回是否写出。"""
+    ts_ns = header_stamp_ns(msg)
+    if start_ns is not None and ts_ns < start_ns:
+        return False
+    if end_ns is not None and ts_ns > end_ns:
+        return False
+
+    sub = out_dir / sanitize_topic_name(topic)
+    sub.mkdir(parents=True, exist_ok=True)
+    stamp = msg.header.stamp
+    name = fmt_header_stamp(stamp.sec, stamp.nanosec)
+
+    try:
+        if ttype in POINTCLOUD_TYPES:
+            payload = (pointcloud2_to_pcd(msg) if ttype == "sensor_msgs/msg/PointCloud2"
+                       else custom_msg_to_pcd(msg))
+            ext = ".pcd"
+        elif ttype == "sensor_msgs/msg/CompressedImage":
+            payload, ext = compressed_image_to_bytes(msg, img_format)
+        else:  # sensor_msgs/msg/Image
+            payload, ext = raw_image_to_bytes(msg, img_format)
+    except Exception as e:
+        if topic not in warn_once:
+            warn_once.add(topic)
+            print(f"[警告] {topic}: 帧 {name} dump 失败: {e}", file=sys.stderr)
+        return False
+
+    # 防重名：同一时间戳出现多帧时加 _1/_2/... 后缀
+    path = sub / (name + ext)
+    k = 1
+    while path.exists():
+        path = sub / f"{name}_{k}{ext}"
+        k += 1
+    path.write_bytes(payload)
+    media_counts[topic] = media_counts.get(topic, 0) + 1
+    return True
 
 
 # ---- 主流程 ----
@@ -429,9 +645,35 @@ def main():
     ap.add_argument("--sep", default=" ", help="列分隔符（默认单个空格）")
     ap.add_argument("--header", action="store_true", help="写表头行（默认不写）")
     ap.add_argument("--list-topics", action="store_true", help="仅列出 topic 与类型后退出")
+    ap.add_argument("--dump-media", dest="dump_media", action="store_true", default=None,
+                    help="开启点云/图像 dump（覆盖脚本顶部 DUMP_MEDIA）")
+    ap.add_argument("--no-dump-media", dest="dump_media", action="store_false", default=None,
+                    help="关闭点云/图像 dump（覆盖脚本顶部 DUMP_MEDIA）")
+    ap.add_argument("--pointcloud-topics", default=None,
+                    help="逗号分隔的点云 topic 名，覆盖脚本顶部 POINTCLOUD_TOPICS")
+    ap.add_argument("--image-topics", default=None,
+                    help="逗号分隔的图像 topic 名，覆盖脚本顶部 IMAGE_TOPICS")
+    ap.add_argument("--start-time", default=None,
+                    help="时间范围起点（秒，epoch，可含小数/纳秒），只 dump 此后的点云/图像帧；默认取脚本顶部 DUMP_START_TIME")
+    ap.add_argument("--end-time", default=None,
+                    help="时间范围终点（秒，epoch），只 dump 此前的点云/图像帧；默认取脚本顶部 DUMP_END_TIME")
+    ap.add_argument("--img-format", default=None, choices=["jpg", "png"],
+                    help="图像输出格式 jpg/png（默认取脚本顶部 DUMP_IMG_FORMAT；源已同格式时直接复制不重编码）")
     args = ap.parse_args()
 
     write_header = WRITE_HEADER or args.header
+    dump_media = DUMP_MEDIA if args.dump_media is None else args.dump_media
+    img_format = (args.img_format or DUMP_IMG_FORMAT).lower()
+    start_arg = args.start_time if args.start_time is not None else DUMP_START_TIME
+    end_arg = args.end_time if args.end_time is not None else DUMP_END_TIME
+    start_ns = parse_time_arg(start_arg)
+    end_ns = parse_time_arg(end_arg)
+
+    pointcloud_topics = ([t.strip() for t in args.pointcloud_topics.split(",") if t.strip()]
+                         if args.pointcloud_topics is not None else list(POINTCLOUD_TOPICS))
+    image_topics = ([t.strip() for t in args.image_topics.split(",") if t.strip()]
+                    if args.image_topics is not None else list(IMAGE_TOPICS))
+    dump_topics = set(pointcloud_topics) | set(image_topics)
 
     bag_dir = str(Path(args.bag))
     storage_id = args.storage or detect_storage_id(bag_dir)
@@ -465,6 +707,12 @@ def main():
     else:
         matched = list(all_topics)
 
+    # 把配置/命令行指定的点云、图像 dump topic 合并进匹配集（不干扰上面的关键字/--topics 选择）
+    if dump_topics:
+        existing = {tm.name for tm in matched}
+        matched.extend(tm for tm in all_topics
+                       if tm.name in dump_topics and tm.name not in existing)
+
     if not matched:
         print("没有匹配的 topic。可用 --list-topics 查看 bag 里的 topic。", file=sys.stderr)
         return
@@ -472,8 +720,17 @@ def main():
     print(f"关键字: {keywords if keywords else '(无，全量)'}")
     print(f"匹配到 {len(matched)} 个 topic:")
     for tm in sorted(matched, key=lambda t: t.name):
-        fmt_name = FORMATTERS.get(tm.type, fmt_generic).__name__
-        print(f"  {tm.name:40s} {tm.type:32s} -> {fmt_name}")
+        if tm.name in dump_topics and (tm.type in POINTCLOUD_TYPES or tm.type in IMAGE_TYPES):
+            if dump_media:
+                desc = ("pcd 帧 dump" if tm.type in POINTCLOUD_TYPES
+                        else f"图像帧 dump ({img_format})")
+            elif tm.type in POINTCLOUD_TYPES:
+                desc = "点云元信息 txt（dump 已关闭）"
+            else:
+                desc = "图像（dump 已关闭，跳过）"
+        else:
+            desc = FORMATTERS.get(tm.type, fmt_generic).__name__
+        print(f"  {tm.name:40s} {tm.type:32s} -> {desc}")
 
     reader.set_filter(StorageFilter(topics=sorted(tm.name for tm in matched)))
 
@@ -495,6 +752,8 @@ def main():
 
     handles = {}
     counts = {}
+    media_counts = {}
+    media_warn_once = set()
     generic_warn = set()
     total = 0
 
@@ -506,6 +765,17 @@ def main():
 
         msg = deserialize_message(data, cls)
         ttype = topic_type[topic]
+
+        # 二进制 dump：仅当开启且该 topic 在配置列表里（点云 -> .pcd，图像 -> .jpg/.png）
+        if (dump_media and topic in dump_topics
+                and (ttype in POINTCLOUD_TYPES or ttype in IMAGE_TYPES)):
+            dump_media_message(msg, ttype, topic, out_dir, start_ns, end_ns,
+                               img_format, media_counts, media_warn_once)
+
+        # 文本：图像不写文本；点云走 fmt_custom_msg 写元信息 txt；其它类型照旧
+        if ttype in IMAGE_TYPES:
+            continue
+
         formatter = FORMATTERS.get(ttype, fmt_generic)
         cols, vals = formatter(msg, topic)
 
@@ -572,15 +842,38 @@ def main():
     # 汇总
     print(f"\n共导出 {total} 条消息，输出目录: {out_dir.resolve()}")
     for tm in sorted(matched, key=lambda t: t.name):
-        n = counts.get(tm.name, 0)
-        path = out_dir / (sanitize_topic_name(tm.name) + ".txt")
+        ttype = tm.type
+        name = tm.name
+
+        # 图像：只做二进制 dump，不写文本
+        if ttype in IMAGE_TYPES:
+            if dump_media and name in dump_topics:
+                n = media_counts.get(name, 0)
+                sub = sanitize_topic_name(name)
+                if n == 0:
+                    print(f"  {name:40s} 0 帧（该 topic 在时间范围内无数据）")
+                else:
+                    print(f"  {name:40s} {n:>8} 帧 -> {sub}/ (每帧 .{img_format})")
+            else:
+                print(f"  {name:40s} 未 dump（DUMP_MEDIA 关闭或未在 IMAGE_TOPICS 中）")
+            continue
+
+        # 文本（点云在此写元信息 txt）
+        n = counts.get(name, 0)
+        path = out_dir / (sanitize_topic_name(name) + ".txt")
         note = ""
-        if tm.name in generic_warn:
+        if name in generic_warn:
             note = "  [通用格式，如需定制请告诉我]"
         if n == 0:
-            print(f"  {tm.name:40s} 0 条（该 topic 无数据，未生成文件）")
+            print(f"  {name:40s} 0 条（该 topic 无数据，未生成文件）")
         else:
-            print(f"  {tm.name:40s} {n:>8} 条 -> {path.name}{note}")
+            print(f"  {name:40s} {n:>8} 条 -> {path.name}{note}")
+
+        # 点云额外 dump 的 PCD
+        if ttype in POINTCLOUD_TYPES and dump_media and name in dump_topics:
+            m = media_counts.get(name, 0)
+            sub = sanitize_topic_name(name)
+            print(f"  {'':40s} {m:>8} 帧 -> {sub}/ (每帧 .pcd)")
 
 
 if __name__ == "__main__":

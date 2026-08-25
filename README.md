@@ -33,6 +33,13 @@ python3 parse_bag.py --bag <bag目录> --topics /gps/pos,/gps/pva
 
 # 指定输出根目录 / 写表头行
 python3 parse_bag.py --bag <bag目录> --out /path/to/out --header
+
+# 点云 / 图像按帧 dump：推荐在脚本顶部配置（见「点云 / 图像按帧 dump」节），
+# 也可用命令行覆盖配置（--dump-media / --pointcloud-topics / --image-topics 等）
+python3 parse_bag.py --bag <bag目录> --dump-media \
+    --pointcloud-topics /livox/lidar_192_168_1_158 \
+    --image-topics /cam0/image_raw/compressed \
+    --start-time 1787218155 --end-time 1787218160 --img-format png
 ```
 
 > 结果统一写到 `<out>/<bag目录名>_parsed_res/` 下，例如
@@ -43,7 +50,9 @@ python3 parse_bag.py --bag <bag目录> --out /path/to/out --header
 - 默认按**关键字**过滤：topic 名（小写）包含任一关键字才解析。
 - 关键字列表在脚本顶部 `KEYWORDS` 里配置，也可用 `--keywords` 覆盖。
 - 用 `--topics` 传入精确 topic 名时，忽略关键字过滤。
-- 点云 `/livox/lidar_*`、图像 `/cam3/image_raw/compressed` 因不含关键字而自动跳过。
+- 点云 `/livox/lidar_*`、图像 `/cam*/image_raw/compressed` 因不含默认关键字而自动跳过；
+  需要 dump 时在脚本顶部配置 `POINTCLOUD_TOPICS` / `IMAGE_TOPICS`（或用
+  `--pointcloud-topics` / `--image-topics`），并打开 `DUMP_MEDIA` 开关（见下节）。
 
 ## 输出格式
 
@@ -61,6 +70,7 @@ python3 parse_bag.py --bag <bag目录> --out /path/to/out --header
 | `gnss_comm/msg/GinsPvaMsg` | `lat lon alt roll pitch yaw vel_e vel_n vel_u vel_yaw` | 经纬度 + 姿态角 + 速度；另生成 `*_utm.txt` / `*_vel_utm.txt`（TUM）与 `*.geojson` |
 | `gnss_comm/msg/GnssHdgMsg` | `hdg_type baseline heading pitch` | 航向解状态 + 基线 + 航向/俯仰 |
 | `gnss_comm/msg/GnssVelMsg` | `vel_e vel_n vel_u` | ENU 速度 |
+| `livox_ros_driver2/msg/CustomMsg`（点云） | `header_time timebase point_num lidar_id` | 元信息（不含点云本体）；第一列是 header 时间 |
 | 其它类型 | 通用展平：递归展开所有标量字段 | 见下 |
 
 **加速度单位换算**：livox 驱动的 IMU，`linear_acceleration` 单位是 **g**（源码注释
@@ -107,6 +117,46 @@ Point 的 `FeatureCollection`，每个点 `geometry` 为 `Point([lon, lat])`，`
 为 `{"time": 时间戳, "info": 最后一列（即 vel_yaw 航向角，单位度）}`。为避免轨迹点
 过密，按 `ts_interval=0.1` 秒做了时间抽稀（本 bag 的 pva 约 46Hz，抽稀后约 10Hz）。
 
+## 点云 / 图像按帧 dump
+
+由脚本顶部的一键开关 `DUMP_MEDIA` 控制：**关闭**（默认）时，点云 topic 只写元信息
+txt，图像不导出；**打开**时，`POINTCLOUD_TOPICS` / `IMAGE_TOPICS` 里列出的 topic 会
+按帧落盘成独立文件，目录名即 topic 名：
+
+```
+<out>/<bag名>_parsed_res/
+  livox_lidar_192_168_1_158.txt        # 点云元信息（始终生成）
+  livox_lidar_192_168_1_158/           # 点云（DUMP_MEDIA=True 时每帧 .pcd）
+    1787218156.400168210.pcd
+    ...
+  cam0_image_raw_compressed/           # 图像（DUMP_MEDIA=True 时每帧 .jpg/.png）
+    1787218158.247785631.jpg
+    ...
+```
+
+脚本顶部配置项（`--pointcloud-topics` / `--image-topics` / `--start-time` /
+`--end-time` / `--img-format` / `--dump-media` / `--no-dump-media` 可覆盖）：
+
+```python
+DUMP_MEDIA = False                     # 一键开关
+POINTCLOUD_TOPICS = []                 # 例: ["/livox/lidar_192_168_1_158"]
+IMAGE_TOPICS = []                      # 例: ["/cam0/image_raw/compressed"]
+DUMP_START_TIME = None                 # 时间范围起点（秒，epoch）；None 不限
+DUMP_END_TIME = None                   # 时间范围终点
+DUMP_IMG_FORMAT = "jpg"                # 图像格式 jpg / png
+```
+
+- 按**消息类型识别**：点云（`livox_ros_driver2/msg/CustomMsg`、
+  `sensor_msgs/msg/PointCloud2`）→ `.pcd`；图像（`sensor_msgs/msg/Image`、
+  `sensor_msgs/msg/CompressedImage`）→ `.jpg`/`.png`。
+- 文件名用消息 **header.stamp**（`秒.纳秒`），同时间戳多帧会自动加 `_1/_2/...` 后缀。
+- **PCD**：二进制格式，字段 `x y z intensity`，其中 `intensity` = Livox 的 `reflectivity`
+  （0~255）。`PointCloud2` 会额外保留 `intensity` 字段（若存在）。
+- **图像**：`DUMP_IMG_FORMAT` 选 `jpg`（默认）或 `png`。`CompressedImage` 源格式与目标
+  一致时直接复制原始字节（无损、更快），否则解码后重编码。
+- **时间范围**：`DUMP_START_TIME` / `DUMP_END_TIME`（单位秒，epoch，可含小数），用
+  header.stamp 过滤，只 dump 落在闭区间内的帧；两者都可省略。
+
 ## 通用展平（其它消息类型）
 
 对于没有单独定制的类型，脚本递归展开所有标量字段为 `父字段.子字段` 形式的多列
@@ -125,6 +175,12 @@ Point 的 `FeatureCollection`，每个点 `geometry` 为 `Point([lon, lat])`，`
 | `--sep` | 列分隔符 | 单个空格 |
 | `--header` | 写表头行（默认不写） | 不写 |
 | `--list-topics` | 只列出 topic 与类型后退出 | — |
+| `--dump-media` / `--no-dump-media` | 开/关点云图像 dump，覆盖 `DUMP_MEDIA` | 脚本顶部 `DUMP_MEDIA` |
+| `--pointcloud-topics` | 逗号分隔的点云 topic，覆盖 `POINTCLOUD_TOPICS` | 脚本顶部配置 |
+| `--image-topics` | 逗号分隔的图像 topic，覆盖 `IMAGE_TOPICS` | 脚本顶部配置 |
+| `--start-time` | 时间范围起点（秒，epoch），只 dump 此后的点云/图像帧 | `DUMP_START_TIME` |
+| `--end-time` | 时间范围终点（秒，epoch），只 dump 此前的点云/图像帧 | `DUMP_END_TIME` |
+| `--img-format` | 图像输出格式 `jpg`/`png` | `DUMP_IMG_FORMAT` |
 
 ## 说明
 

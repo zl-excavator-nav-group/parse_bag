@@ -36,7 +36,7 @@ else:
 #         print(i)
 #         axs[i - 1].plot(df[0], df[i])
 #     plt.xlabel('Row')
-fig, axs = plt.subplots(2, 1, sharex=True)
+fig, axs = plt.subplots(3, 1, sharex=True)
 # odom pack使用
 # axs[0].plot(df[1], df[9]) # yawrate
 # axs[1].plot(df[1], df[10]) # source
@@ -57,19 +57,21 @@ fig, axs = plt.subplots(2, 1, sharex=True)
 # df_0_diff = df[0].diff()
 # axs[0].plot(df[0], df[1].diff(), marker='o', markersize=2) # ay
 # axs[1].plot(df[0], df[4].diff(), marker='o', markersize=2) # ay
-# axs[0].plot(df[0], df[1], marker='o', markersize=2) # ay
-# axs[1].plot(df[0], df[2], marker='o', markersize=2) # ay
-# axs[1].plot(df[0], df[3], marker='o', markersize=2) # ax
+
+axs[0].plot(df[0], df[1], marker='o', markersize=2) # ay
+axs[1].plot(df[0], df[2], marker='o', markersize=2) # ay
+axs[2].plot(df[0], df[3], marker='o', markersize=2) # ax
 # axs[1].plot(df[0], df[4], marker='o', markersize=2) # ay
 
 
-axs[0].plot(df[0], df[9], marker='o', markersize=2) # 回转编码器
-axs[1].plot(df[0], df[10], marker='o', markersize=2) #
+# axs[0].plot(df[0], df[9], marker='o', markersize=2) # 回转编码器
+# axs[1].plot(df[0], df[10], marker='o', markersize=2) #
+# axs[2].plot(df[0], df[11], marker='o', markersize=2) #
 
 
 axs[0].grid(True)
 axs[1].grid(True)
-# axs[2].grid(True)
+axs[2].grid(True)
 
 
 plt.show()
