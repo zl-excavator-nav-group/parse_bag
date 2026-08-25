@@ -68,7 +68,7 @@ python3 parse_bag.py --bag <bag目录> --dump-media \
 | `nmea_msgs/msg/Gpgga` | `lat lon alt` | 经纬度（deg）+ 高程（m） |
 | `gnss_comm/msg/GnssPosMsg` | `lat lon alt` | 经纬度 + 高程 |
 | `gnss_comm/msg/GinsPvaMsg` | `lat lon alt roll pitch yaw vel_e vel_n vel_u vel_yaw` | 经纬度 + 姿态角 + 速度；另生成 `*_utm.txt` / `*_vel_utm.txt`（TUM）与 `*.geojson` |
-| `gnss_comm/msg/GnssHdgMsg` | `hdg_type baseline heading pitch` | 航向解状态 + 基线 + 航向/俯仰 |
+| `gnss_comm/msg/GnssHdgMsg` | `hdg_type baseline heading pitch` | 航向解状态 + 基线 + 航向/俯仰；与位置 topic 匹配后另生成 `*_hdg_utm.txt` / `*_hdg_odom.txt` / `*.geojson` |
 | `gnss_comm/msg/GnssVelMsg` | `vel_e vel_n vel_u` | ENU 速度 |
 | `livox_ros_driver2/msg/CustomMsg`（点云） | `header_time timebase point_num lidar_id` | 元信息（不含点云本体）；第一列是 header 时间 |
 | 其它类型 | 通用展平：递归展开所有标量字段 | 见下 |
@@ -99,13 +99,19 @@ UTM 分区取第一条数据的 zone 后全程固定。姿态角（roll/pitch/ya
 **时间戳就近匹配**，输出 `gps_pos_hdg_utm.txt`（TUM 格式）。位置用经纬度转 UTM
 easting/northing，高程取 alt；姿态取 hdg 的 `heading`（yaw）与 `pitch`，`roll` 置 0。
 `GnssHdgMsg.heading` 定义是 *counterclockwise from east [deg]*（即 ENU 系 yaw），先
-度转弧度再经 `ENUYawToUTMYaw` 修正 UTM 网格收敛角。也可脱离 bag 单独对已导出的
-txt 运行：
+度转弧度再经 `ENUYawToUTMYaw` 修正 UTM 网格收敛角。
 
-```bash
-python3 combine_pos_hdg_tum.py --dir output
-# 或 python3 combine_pos_hdg_tum.py --pos output/gps_pos.txt --hdg output/gps_hdg.txt --out output/gps_traj_utm.txt
-```
+在 `gps_pos_hdg_utm.txt` 之上还会再出两份产物：
+
+- `gps_pos_hdg_odom.txt`：把上面的 TUM 轨迹**对齐到起点坐标系**（同样是 TUM 格式）。
+  以首帧位姿为基准，roll/pitch 置 0、只保留首帧 yaw 构成 `T_start`，每帧做
+  `inv(T_start) @ T`，于是首帧平移为 `0 0 0`、姿态为单位阵，后续帧是相对起点的位姿。
+  （PVA 链路的同类产物叫 `gnss_odom.txt`，两者互不覆盖。）
+- `gps_pos.geojson`：轨迹的 GeoJSON，直接由经纬度原文件 `gps_pos.txt` 生成（TUM 里是
+  UTM 坐标，不能直接喂 `utils.create_geojson`）。Point 的 `FeatureCollection`，
+  `geometry` 为 `Point([lon, lat])`，`properties` 为 `{"time": 时间戳, "info": alt}`，
+  按 `ts_interval=0.1` 秒抽稀。因为取的是位置原文件，帧数会比 TUM 多出那几帧
+  「没匹配到航向」的位置数据。
 
 > 生成 TUM 依赖同目录下的 `utils.py`（以及 `utm`、`geojson` 等第三方包）。如未安装，
 > 可执行 `python3 -m pip install --user utm geojson`；缺少依赖时脚本仍会正常导出其它

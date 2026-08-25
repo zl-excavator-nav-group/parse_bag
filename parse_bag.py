@@ -22,7 +22,9 @@
   同时把经纬度/姿态转到 UTM 坐标系，额外生成 <name>_utm.txt（车身 yaw）、
   <name>_vel_utm.txt（航向 vel_yaw）两份 TUM 文件，以及 <name>.geojson 轨迹文件；
   并对 <name>_utm.txt 做起点对齐（首帧为原点、仅保留 yaw），生成 gnss_odom.txt。
-- GnssHdgMsg：hdg_type, baseline, heading, pitch。
+- GnssHdgMsg：hdg_type, baseline, heading, pitch；与位置 topic（GnssPosMsg / Gpgga）
+  按时间戳就近匹配后，额外生成 <pos名>_hdg_utm.txt（UTM 下的 TUM 轨迹）、
+  <pos名>_hdg_odom.txt（起点对齐轨迹）与 <pos名>.geojson。
 - GnssVelMsg：vel_e, vel_n, vel_u。
 - 其它匹配到但未单独定制的类型：通用展平（递归展开标量字段、跳过数组）。
 
@@ -70,7 +72,7 @@ except Exception:
     utils = None
 
 # ======================== 配置（按需修改） ========================
-BAG_PATH = "/home/chenchen/Data/0820_data/rosbag2_2026_08_20-09_29_15"
+BAG_PATH = "/home/chenchen/Data/0820_data/rosbag2_2026_08_20-08_27_47/"
 OUTPUT_DIR = "/home/chenchen/code/parse_bag/output"
 
 # topic 名（小写）包含任一关键字才解析；留空表示全部解析
@@ -93,7 +95,7 @@ DEFAULT_ACC_SCALE = 1.0
 
 # ---- 点云 / 图像按帧 dump 配置 ----
 # 一键开关：True 时按帧 dump 点云(.pcd)/图像(.jpg/.png)；False 时点云仍写元信息 txt、图像不导出
-DUMP_MEDIA = True
+DUMP_MEDIA = False
 
 # 要 dump 的点云 / 图像 topic 名（精确匹配；留空则该类不 dump）
 POINTCLOUD_TOPICS = ["/livox/lidar_192_168_1_158"]   # 例: ["/livox/lidar_192_168_1_158"]
@@ -319,7 +321,7 @@ def convert_pva_to_tum(llh_file, tum_file, roll_col=4, pitch_col=5, yaw_col=6, z
     return n
 
 
-def align_traj_to_start_time(tum_file, start_tp=0):
+def align_traj_to_start_time(tum_file, start_tp=0, out_name=None):
     """把 TUM 轨迹对齐到起点坐标系（首帧为原点，仅保留首帧 yaw）。
 
     参考 run_parse_mcap.py 的 align_traj_to_start_time 与 sync_traj.adj_traj(only_yaw=True)：
@@ -327,7 +329,8 @@ def align_traj_to_start_time(tum_file, start_tp=0):
     - 若 start_tp > 0，丢弃时间戳早于 start_tp 的帧；
     - 以首帧位姿为基准，把 roll/pitch 置 0、只保留 yaw 构成起点变换 T_start，
       再对每帧做 pos.T = inv(T_start) @ pos.T（平移归零，姿态保持相对变化）；
-    - 输出到同目录：start_tp==0 -> gnss_odom.txt，否则 aligned_start_<原名>。
+    - 输出到同目录：start_tp==0 -> gnss_odom.txt，否则 aligned_start_<原名>；
+      传了 out_name 时以 out_name 为准（多条链路各写各的，避免重名覆盖）。
 
     返回写入的帧数。
     """
@@ -338,8 +341,8 @@ def align_traj_to_start_time(tum_file, start_tp=0):
 
     tum_path = Path(tum_file)
     out_dir = tum_path.parent
-    output_path = out_dir / ("gnss_odom.txt" if start_tp == 0
-                             else f"aligned_start_{tum_path.name}")
+    output_path = out_dir / (out_name or ("gnss_odom.txt" if start_tp == 0
+                                          else f"aligned_start_{tum_path.name}"))
 
     frames = []  # (ts_str, ts_float, T)
     with open(tum_path, encoding="utf-8") as fin:
@@ -832,12 +835,22 @@ def main():
     hdg_topics = [tm for tm in matched
                   if tm.type == "gnss_comm/msg/GnssHdgMsg" and counts.get(tm.name, 0) > 0]
     for pos_tm, hdg_tm in zip(pos_topics, hdg_topics):
-        pos_path = out_dir / (sanitize_topic_name(pos_tm.name) + ".txt")
+        base = sanitize_topic_name(pos_tm.name)
+        pos_path = out_dir / (base + ".txt")
         hdg_path = out_dir / (sanitize_topic_name(hdg_tm.name) + ".txt")
-        tum_path = out_dir / (sanitize_topic_name(pos_tm.name) + "_hdg_utm.txt")
+        tum_path = out_dir / (base + "_hdg_utm.txt")
         if utils is not None:
             n = utils.combine_pos_hdg_to_tum(pos_path, hdg_path, tum_path)
             print(f"  生成 TUM(pos+hdg):      {tum_path.name} ({n} 帧)")
+            if n > 0:
+                # 起点对齐用 <pos名>_hdg_odom.txt，避免与 pva 的 gnss_odom.txt 重名；
+                # GeoJSON 取经纬度原文件（TUM 是 UTM 坐标，create_geojson 只吃 lat/lon）
+                odom_name = base + "_hdg_odom.txt"
+                n_odom = align_traj_to_start_time(tum_path, start_tp=0,
+                                                  out_name=odom_name)
+                n_geo = generate_geojson(pos_path, ts_interval=0.1)
+                print(f"  生成起点对齐轨迹:      {odom_name} ({n_odom} 帧)")
+                print(f"  生成 GeoJSON(轨迹):     {base}.geojson ({n_geo} 帧)")
 
     # 汇总
     print(f"\n共导出 {total} 条消息，输出目录: {out_dir.resolve()}")
