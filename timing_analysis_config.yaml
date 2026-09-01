@@ -1,0 +1,43 @@
+# ==================== 多传感器时序 / 时间同步分析 配置 ====================
+# 运行方式：python3 timing_analysis.py（无需任何命令行参数，全部从本文件读取）
+
+# 输入目录：parse_bag.py 导出的 *_parsed_res 目录（含各 topic 的 *_timing.txt）
+input_dir: "/home/chenchen/code/parse_bag/output_0820/rosbag2_2026_08_20-09_24_26_parsed_res"
+
+# 输出目录：空字符串表示默认 <input_dir>/timing_report/
+output_dir: ""
+
+# 只分析 topic 名包含这些子串（不区分大小写）的话题；空列表 = 分析全部
+topic_filter: []
+# topic_filter: ["livox_imu_192_168_1_158", "gps_imu_raw"]
+
+# 传感器理论输出频率（Hz），按 topic 名关键字匹配；未命中的 topic 用 median(delta_h) 自动估计
+sensor_freq_hz:
+  "livox_imu": 200   # livox 内置 IMU 理论 200Hz（实测 ~175Hz，差值即丢帧）
+  "gps_imu_raw": 125 # INS IMU，实测 ~125Hz（8ms）
+  "gps_pva": 50
+  "gps_pos": 1       # GNSS 定位 1Hz
+  "gps_hdg": 1       # GNSS 航向 1Hz
+  "gps_gpgga": 1     # NMEA GPGGA 1Hz
+  "swing_encoder": 100  # 回转编码器 100Hz
+  "livox_lidar": 10
+
+# 全局异常判定阈值
+thresholds:
+  diff_spike_ms: 80.0          # diff(t_r-t_h) 超过此值 -> 延迟尖峰
+  out_of_order_ratio_max: 0.01 # 到达乱序占比超限告警
+  gap_factor: 10.0             # delta_h/delta_r > gap_factor*period -> 断流
+  burst_eps_ms: 0.5            # delta_h < burst_eps_ms -> 爆帧
+  burst_min_count: 5           # 连续爆帧组的最少帧数
+  offset_warn_ms: 20.0         # 跨 IMU 估计 offset 绝对值超限告警
+
+# 跨话题时间同步分析（只对下面这一对话题做）
+sync:
+  topics: ["gps_imu_raw", "livox_imu_192_168_1_158"]
+  axis: "z"          # 互相关用的角速度轴：x / y / z / norm（挖掘机摆动以 yaw/z 为主）
+  max_offset_s: 1.0  # 互相关搜索的最大时间偏移（秒）
+  sample_dt: 0.01    # 重采样间隔（秒）
+
+# 绘图开关
+plot:
+  enabled: true     # true 时非交互式输出 PNG 到 <out>/plots/，并汇总生成 timing_report.pdf

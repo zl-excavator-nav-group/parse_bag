@@ -4,3 +4,9 @@ output/
 # Python 缓存
 __pycache__/
 *.pyc
+*.txt
+*.png
+*.geojson
+*.csv
+*.pdf
+*.png

@@ -6,8 +6,10 @@
 特性：
 - 用关键字列表过滤 topic（默认 "gnss,imu,encoder,gps"，topic 名包含任一关键字才解析）。
 - 每个匹配的 topic 生成一个 .txt 文件，文件名由 topic 名而来（'/' 换成 '_'）。
-- 每行第一列是时间戳（单位：秒，精确到纳秒），后面各列是数据，空格分隔。
+- 每行第一列是 header 时间戳（单位：秒，精确到纳秒；无 header 的消息退回接收时间），后面各列是数据，空格分隔。
 - 默认不写表头行；需要时用 --header 打开。
+- 每个 topic 额外生成 <topic>_timing.txt 用于时序分析：第一列 header 时间戳(秒)、
+  第二列接收时间(秒)、第三列 接收时间-header 时间(毫秒)。
 
 各消息类型的列（均不含第一列时间戳）：
 - IMU（sensor_msgs/Imu）：acc_x/y/z, gyro_x/y/z；
@@ -72,17 +74,23 @@ except Exception:
     utils = None
 
 # ======================== 配置（按需修改） ========================
-BAG_PATH = "/home/chenchen/Data/0820_data/rosbag2_2026_08_20-08_27_47/"
-OUTPUT_DIR = "/home/chenchen/code/parse_bag/output"
+BAG_PATH = "/home/chenchen/Data/0820_data/rosbag2_2026_08_20-09_24_26/"
+OUTPUT_DIR = "/home/chenchen/code/parse_bag/output_0820"
 
 # topic 名（小写）包含任一关键字才解析；留空表示全部解析
 # 点云 topic 名含 "lidar"（如 /livox/lidar_192_168_1_158），故加入 "lidar"
 # KEYWORDS = ["gnss", "imu", "encoder", "gps", "lidar_192_168_1_158"]
 KEYWORDS = ["gnss", "imu", "encoder", "gps"]
+# KEYWORDS = ["lidar"]
+# KEYWORDS = ["/cam0/image_raw/compressed", "/cam1/image_raw/compressed", "/cam2/image_raw/compressed", "/cam3/image_raw/compressed"]
 
 
 # 是否写表头行（列名 + 单位）；默认 False（不带表头），可用 --header 打开
 WRITE_HEADER = False
+
+# 是否额外生成 <topic>_timing.txt（时序分析）：第一列 header 时间戳(秒)、
+# 第二列接收时间(秒)、第三列 接收时间-header 时间(毫秒)
+WRITE_TIMING = True
 
 # IMU 加速度单位 -> m/s^2 的换算系数，按 topic 名匹配关键字。
 # livox 驱动的 IMU，linear_acceleration 单位是 g（源码注释见
@@ -262,7 +270,7 @@ FORMATTERS = {
 }
 
 # 这些类型的 formatter 返回的 vals[0] 已经是时间字符串（如 Livox 点云的 header 时间），
-# 写文件时不再在前面额外加 bag 接收时间戳。
+# 写文件时不再在前面额外加 header 时间戳。
 SELF_TIMESTAMPED_TYPES = {
     "livox_ros_driver2/msg/CustomMsg",
 }
@@ -483,6 +491,15 @@ def header_stamp_ns(msg):
     return int(stamp.sec) * 1_000_000_000 + int(stamp.nanosec)
 
 
+def message_header_ns(msg):
+    """消息 header.stamp -> 整纳秒；消息无 header 时返回 None。"""
+    header = getattr(msg, "header", None)
+    stamp = getattr(header, "stamp", None) if header is not None else None
+    if stamp is None:
+        return None
+    return int(stamp.sec) * 1_000_000_000 + int(stamp.nanosec)
+
+
 def custom_msg_to_pcd(msg):
     """Livox CustomMsg -> PCD 二进制字节（x y z intensity，intensity=reflectivity）。"""
     import numpy as np
@@ -647,6 +664,10 @@ def main():
     ap.add_argument("--storage", default=None, help="存储格式 sqlite3/mcap，默认自动识别")
     ap.add_argument("--sep", default=" ", help="列分隔符（默认单个空格）")
     ap.add_argument("--header", action="store_true", help="写表头行（默认不写）")
+    ap.add_argument("--timing", dest="write_timing", action="store_true", default=None,
+                    help="额外生成 <topic>_timing.txt（默认按脚本顶部 WRITE_TIMING）")
+    ap.add_argument("--no-timing", dest="write_timing", action="store_false", default=None,
+                    help="不生成 <topic>_timing.txt")
     ap.add_argument("--list-topics", action="store_true", help="仅列出 topic 与类型后退出")
     ap.add_argument("--dump-media", dest="dump_media", action="store_true", default=None,
                     help="开启点云/图像 dump（覆盖脚本顶部 DUMP_MEDIA）")
@@ -665,6 +686,7 @@ def main():
     args = ap.parse_args()
 
     write_header = WRITE_HEADER or args.header
+    write_timing = WRITE_TIMING if args.write_timing is None else args.write_timing
     dump_media = DUMP_MEDIA if args.dump_media is None else args.dump_media
     img_format = (args.img_format or DUMP_IMG_FORMAT).lower()
     start_arg = args.start_time if args.start_time is not None else DUMP_START_TIME
@@ -754,6 +776,7 @@ def main():
     out_dir.mkdir(parents=True, exist_ok=True)
 
     handles = {}
+    timing_handles = {}
     counts = {}
     media_counts = {}
     media_warn_once = set()
@@ -768,6 +791,21 @@ def main():
 
         msg = deserialize_message(data, cls)
         ttype = topic_type[topic]
+        h_ns = message_header_ns(msg)  # 该消息的 header 时间戳（纳秒）；无 header 为 None
+
+        # 时序分析：额外写 <topic>_timing.txt（header 时间 / 接收时间 / 延迟）
+        if write_timing:
+            if h_ns is not None:
+                if topic not in timing_handles:
+                    tpath = out_dir / (sanitize_topic_name(topic) + "_timing.txt")
+                    timing_handles[topic] = open(tpath, "w", encoding="utf-8")
+                    if write_header:
+                        timing_handles[topic].write(
+                            args.sep.join(["header_time(s)", "recv_time(s)", "delay(ms)"]) + "\n")
+                delay_ms = (int(t) - h_ns) / 1_000_000.0
+                timing_handles[topic].write(
+                    args.sep.join([fmt_timestamp(h_ns), fmt_timestamp(t),
+                                   f"{delay_ms:.6f}"]) + "\n")
 
         # 二进制 dump：仅当开启且该 topic 在配置列表里（点云 -> .pcd，图像 -> .jpg/.png）
         if (dump_media and topic in dump_topics
@@ -782,7 +820,7 @@ def main():
         formatter = FORMATTERS.get(ttype, fmt_generic)
         cols, vals = formatter(msg, topic)
 
-        # 自身携带时间戳的类型（如 Livox 点云的 header 时间）不再在前面加 bag 接收时间
+        # 自身携带时间戳的类型（如 Livox 点云的 header 时间）不再在前面额外加时间戳
         self_ts = ttype in SELF_TIMESTAMPED_TYPES
 
         if topic not in handles:
@@ -792,13 +830,15 @@ def main():
             if ttype not in FORMATTERS:
                 generic_warn.add(topic)
             if write_header:
-                header_cols = cols if self_ts else ["timestamp(s)"] + cols
+                header_cols = cols if self_ts else ["header_time(s)"] + cols
                 handles[topic].write(args.sep.join(header_cols) + "\n")
 
         if self_ts:
             row = [fmt_value(v) for v in vals]
         else:
-            row = [fmt_timestamp(t)] + [fmt_value(v) for v in vals]
+            # 第一列统一用 header 时间（算法消费的时间基准）；无 header 时退回接收时间
+            ts_ns = h_ns if h_ns is not None else int(t)
+            row = [fmt_timestamp(ts_ns)] + [fmt_value(v) for v in vals]
         handles[topic].write(args.sep.join(row) + "\n")
         counts[topic] += 1
         total += 1

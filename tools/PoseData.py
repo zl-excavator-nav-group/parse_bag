@@ -46,14 +46,29 @@ def cal_pose_err(pos1, pos2):
 
 
 # 从轨迹文件中加载得到轨迹列表
-def read_trajectory_file(file_path):
+def read_trajectory_file(file_path, min_time_interval=0.0):
+    """读取 TUM 轨迹文件。
+
+    参数:
+    - file_path: 轨迹文件路径
+    - min_time_interval: 最小保留时间间隔（秒）。若 <= 0，则不过滤。
+      读取时仅保留与上一条已保留轨迹点时间差 >= min_time_interval 的点。
+    """
     pose_dq = deque()
+    last_tp = None
     with open(file_path, 'r') as file:
         for line in file:
-            data = list(map(float, line.strip().split()))
+            parts = line.strip().split()
+            if len(parts) < 8:
+                continue
+            data = list(map(float, parts))
+            if min_time_interval and min_time_interval > 0 and last_tp is not None:
+                if data[0] - last_tp < min_time_interval:
+                    continue
             pose = Pose(data[0], [data[1], data[2], data[3]],
                         [data[4], data[5], data[6], data[7]])
             pose_dq.append(pose)
+            last_tp = data[0]
     return pose_dq
 
 def output_tum_file(all_pos_dq, file_path):

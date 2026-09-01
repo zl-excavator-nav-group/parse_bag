@@ -1,0 +1,42 @@
+# IMU 静态标定（EOL）配置示例
+# 用法: python3 imu_eol_calib/imu_static_calib.py imu_eol_calib/config_example.yaml
+
+# ---------------- 输入 / 输出 ----------------
+# IMU 原始数据文件（parse_bag.py 产出），7 列: timestamp acc_xyz gyro_xyz
+imu_file: "/home/chenchen/code/parse_bag/parse_res_0826/rosbag2_2026_08_26-03_44_03_parsed_res/gps_imu_raw.txt"
+# 标定结果输出目录（生成 imu_calibration.json / imu_calibration_checksum.json / imu_param.json）
+file_directory: "/home/chenchen/code/parse_bag/imu_eol_calib/calib_res"
+
+# ---------------- 标定时间范围 ----------------
+# 0 表示不限制；可写绝对 epoch 秒，也可写小于 1e6 的值表示“相对首帧的秒偏移”
+# 先用 --scan 搜索静止窗口，再把结果填到这里
+start_timestamp: 0
+end_timestamp: 0
+
+# ---------------- 外参先验 ----------------
+# qCI: [w, x, y, z]。重力观测不出 yaw，标定结果的 yaw 直接取自这里（与 C++ 行为一致，
+#      qCI 的 roll / pitch 会被忽略，由重力解算覆盖）
+qCI: [0.7071068, 0, 0, -0.7071068]
+# tCI: [x, y, z]，单位 m，原样写入 tci_x / tci_y / tci_z
+tCI: [0.0, 0.0, 0.0]
+
+# ---------------- 标定参数（对应 C++ VcsImuFacParam 默认值）----------------
+imu_freq: 100.0            # IMU 标称频率 Hz，用于丢帧率与时间戳统计
+duration_time_ms: 15000    # 标定所需最短数据时长 ms，窗口短于此值直接报错
+
+# roll / pitch 超差检查，此检查在 C++ 中始终执行（不受 enable_check 控制）
+# 若 IMU 本身安装倾角较大，需要相应调大 rpy_thred 或设置 standard_roll / standard_pitch
+rpy_thred: 5.0             # 超差阈值，单位 deg
+standard_roll: 0.0         # 期望 roll，单位 deg
+standard_pitch: 0.0        # 期望 pitch，单位 deg
+
+# ---------------- 数据质量检查 ----------------
+# 默认关闭（与 C++ enable_check_ 默认值一致）。开启后任一项超差都会终止标定、不输出文件
+enable_check: false
+acc_norm_thred: 0.4        # |acc_mean| 相对 9.81 的最大偏差, m/s^2
+acc_std_thred: 0.1         # |acc_std| 上限, m/s^2
+gyro_norm_thred: 0.17      # |gyro_mean| 上限, rad/s
+gyro_std_thred: 0.02       # |gyro_std| 上限, rad/s
+drop_frame_rate_thred: 0.05    # 丢帧率上限
+time_stamp_mean_thred: 2.0     # 帧间隔均值相对标称值的最大偏差, ms
+time_stamp_std_thred: 5.0      # 帧间隔标准差上限, ms

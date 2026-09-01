@@ -37,6 +37,13 @@ class CircleFitResult:
     num_points: int
 
 
+@dataclass
+class HeadingTangentResult:
+    mean_rad: float
+    std_rad: float
+    rotation_sign: int
+
+
 def read_tum_points(path: Path, x_col: int = 1, y_col: int = 2, z_col: int = 3,
                     qx_col: int = 4, qy_col: int = 5, qz_col: int = 6, qw_col: int = 7):
     pts = []
@@ -80,8 +87,34 @@ def quat_to_yaw(qx: float, qy: float, qz: float, qw: float):
     return math.atan2(2.0 * (qw * qz + qx * qy), 1.0 - 2.0 * (qy * qy + qz * qz))
 
 
+def wrap_to_pi(angle):
+    return (angle + math.pi) % (2.0 * math.pi) - math.pi
+
+
+def circular_mean(angles: np.ndarray):
+    return math.atan2(float(np.mean(np.sin(angles))), float(np.mean(np.cos(angles))))
+
+
+def heading_tangent_angle(ts: np.ndarray, xs: np.ndarray, ys: np.ndarray, yaws: np.ndarray,
+                          fit: CircleFitResult, mask: np.ndarray):
+    radial_yaws = np.unwrap(np.arctan2(ys - fit.cy, xs - fit.cx))
+    if len(radial_yaws) >= 2:
+        slope = np.polyfit(ts - ts[0], radial_yaws, 1)[0]
+        rotation_sign = 1 if slope >= 0.0 else -1
+    else:
+        rotation_sign = 1
+
+    tangent_yaws = radial_yaws + rotation_sign * math.pi / 2.0
+    angle_diff = np.array([wrap_to_pi(yaw - tangent) for yaw, tangent in zip(yaws, tangent_yaws)])
+    inlier_diff = angle_diff[mask]
+    mean_rad = circular_mean(inlier_diff)
+    centered = np.array([wrap_to_pi(a - mean_rad) for a in inlier_diff])
+    std_rad = float(np.sqrt(np.mean(centered * centered)))
+    return HeadingTangentResult(mean_rad=mean_rad, std_rad=std_rad, rotation_sign=rotation_sign)
+
+
 def plot_result(xs: np.ndarray, ys: np.ndarray, yaws: np.ndarray, fit: CircleFitResult,
-                out_path: str):
+                heading_tangent: HeadingTangentResult, out_path: str):
     mpl_config = Path("/tmp/estimate_swing_center_mpl")
     mpl_config.mkdir(parents=True, exist_ok=True)
     os.environ.setdefault("MPLCONFIGDIR", str(mpl_config))
@@ -128,7 +161,8 @@ def plot_result(xs: np.ndarray, ys: np.ndarray, yaws: np.ndarray, fit: CircleFit
     ax.set_ylabel("y (m)")
     ax.legend()
     ax.set_title(
-        f"circle fit: r={fit.radius:.3f} m, rmse={fit.rmse:.4f} m, inliers={fit.num_points}"
+        f"circle fit: r={fit.radius:.3f} m, rmse={fit.rmse:.4f} m, "
+        f"heading-tangent={math.degrees(heading_tangent.mean_rad):.2f} deg"
     )
     fig.tight_layout()
 
@@ -189,6 +223,7 @@ def main():
     yaws = np.array([quat_to_yaw(p[4], p[5], p[6], p[7]) for p in pts], dtype=np.float64)
 
     fit, mask = robust_circle_fit(xs, ys, trim_sigma=args.trim_sigma)
+    heading_tangent = heading_tangent_angle(ts, xs, ys, yaws, fit, mask)
     z_center = float(np.mean(zs[mask]))
 
     x0, y0, z0 = xs[0], ys[0], zs[0]
@@ -203,13 +238,16 @@ def main():
         f"radius: {fit.radius:.6f} m\n"
         f"rmse: {fit.rmse:.6f} m\n"
         f"max_abs_error: {fit.max_abs_err:.6f} m\n"
-        f"inliers: {mask.sum()}/{len(mask)}"
+        f"inliers: {mask.sum()}/{len(mask)}\n"
+        f"heading_minus_tangent: {math.degrees(heading_tangent.mean_rad):.6f} deg\n"
+        f"heading_minus_tangent_std: {math.degrees(heading_tangent.std_rad):.6f} deg\n"
+        f"rotation_direction: {'ccw' if heading_tangent.rotation_sign > 0 else 'cw'}"
     )
 
     print(text)
 
     plot_path = traj_path.with_name(f"{traj_path.stem}_swing_center.png")
-    plot_result(xs, ys, yaws, fit, out_path=str(plot_path))
+    plot_result(xs, ys, yaws, fit, heading_tangent, out_path=str(plot_path))
     print(f"plot saved: {plot_path}")
 
 
