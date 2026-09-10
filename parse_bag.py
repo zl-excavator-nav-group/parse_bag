@@ -74,13 +74,15 @@ except Exception:
     utils = None
 
 # ======================== 配置（按需修改） ========================
-BAG_PATH = "/home/chenchen/Data/0820_data/rosbag2_2026_08_20-09_24_26/"
-OUTPUT_DIR = "/home/chenchen/code/parse_bag/output_0820"
+# 如果是mcap，直接到包目录；如果是sqlite3，指定 session 目录（含 metadata.yaml）
+# BAG_PATH = "/home/chenchen/Data/2t_ex_data/0909/sensor_records/sensor_2026-09-09_143549/bag/session/"
+BAG_PATH = "/home/chenchen/Data/145_ex/rosbag2_2026_09_09-10_09_51/"
+OUTPUT_DIR = "/home/chenchen/code/parse_bag/output_0909_145"
 
 # topic 名（小写）包含任一关键字才解析；留空表示全部解析
 # 点云 topic 名含 "lidar"（如 /livox/lidar_192_168_1_158），故加入 "lidar"
 # KEYWORDS = ["gnss", "imu", "encoder", "gps", "lidar_192_168_1_158"]
-KEYWORDS = ["gnss", "imu", "encoder", "gps"]
+KEYWORDS = ["gnss", "imu", "encoder", "gps", 'lidar', 'cam']
 # KEYWORDS = ["lidar"]
 # KEYWORDS = ["/cam0/image_raw/compressed", "/cam1/image_raw/compressed", "/cam2/image_raw/compressed", "/cam3/image_raw/compressed"]
 
