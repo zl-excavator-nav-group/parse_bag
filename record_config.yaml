@@ -1,0 +1,43 @@
+# ==================== ROS2 录制配置 ====================
+# 运行方式：python3 record_bag.py（默认读取本文件，可用 --config 指定其它配置文件）
+
+# 录制输出基础目录。
+# 脚本会在此目录下自动创建带时间戳的新子目录作为本次录制输出，
+# 例如 <record_dir>/rosbag2_2026_09_14-17_30_00/
+record_dir: "/home/chenchen/code/parse_bag/output_bags"
+
+# 待录制的 topic 列表（必填，至少一个）。
+# 可直接写完整 topic 名；也支持正则（配合下方 regex，见注释）。
+topics:
+  - "/localization"
+  - "/livox/imu_192_168_1_181"
+  - "/livox/lidar_192_168_1_181"
+  - "/odometry"
+  - "/excavator/swing/encoder_state"
+
+# 存储格式：mcap（推荐，本仓库解析工具用）/ sqlite3
+storage: "mcap"
+
+# 可选：只录制 topic 名匹配该正则的话题（叠加在 topics 之上）；留空 "" 表示不启用
+regex: ""
+# 可选：排除 topic 名匹配该正则的话题；留空 "" 表示不启用
+exclude: ""
+
+# 可选：单个 bag 文件最大大小（字节），达到后自动切分成新的 mcap；0 表示不切分（无限增长）。
+# 2 GB = 2 * 1024 * 1024 * 1024 = 2147483648
+max_bag_size: 2147483648
+
+# 可选：最大缓存大小（MB），0 表示使用 ros2 默认值
+max_cache_size: 0
+
+# mcap 分块压缩预设（mcap 存储插件原生压缩，读取端自动解压、无需处理）。
+# 可选：none / fastwrite / zstd_fast / zstd_small
+#   zstd_fast = zstd 快速压缩（省空间、CPU 开销小），zstd_small = 高压缩比（更慢）
+# 注意：mcap 不支持 ros2 的 --compression-mode message/file 通用压缩，请用本项或 storage_config_file。
+storage_preset_profile: "zstd_fast"
+
+# 或用自定义 mcap 存储配置文件（留空 "" 则不启用；非空时优先于上面的 preset）。
+# 文件内容示例（yaml）：
+#   compression: Zstd         # None / Zstd / Lz4
+#   compressionLevel: Fastest # Fastest / Fast / Default / Slowest
+storage_config_file: ""

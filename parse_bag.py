@@ -28,6 +28,8 @@
   按时间戳就近匹配后，额外生成 <pos名>_hdg_utm.txt（UTM 下的 TUM 轨迹）、
   <pos名>_hdg_odom.txt（起点对齐轨迹）与 <pos名>.geojson。
 - GnssVelMsg：vel_e, vel_n, vel_u。
+- Odometry（nav_msgs/msg/Odometry）：直接输出 TUM 轨迹（timestamp tx ty tz qx qy qz qw），
+  位置/姿态取自 pose.pose；同时生成 <topic>_timing.txt（header 时间 / 接收时间 / 延迟）。
 - 其它匹配到但未单独定制的类型：通用展平（递归展开标量字段、跳过数组）。
 
 运行前必须先 source 好 ROS2 与当前工作空间的环境：
@@ -76,13 +78,13 @@ except Exception:
 # ======================== 配置（按需修改） ========================
 # 如果是mcap，直接到包目录；如果是sqlite3，指定 session 目录（含 metadata.yaml）
 # BAG_PATH = "/home/chenchen/Data/2t_ex_data/0909/sensor_records/sensor_2026-09-09_143549/bag/session/"
-BAG_PATH = "/home/chenchen/Data/145_ex/rosbag2_2026_09_09-10_09_51/"
-OUTPUT_DIR = "/home/chenchen/code/parse_bag/output_0909_145"
+BAG_PATH = "/home/chenchen/Data/2t_ex_data/rosbag2_2026_09_14-19_08_26/"
+OUTPUT_DIR = "/home/chenchen/code/parse_bag/output_0914"
 
 # topic 名（小写）包含任一关键字才解析；留空表示全部解析
 # 点云 topic 名含 "lidar"（如 /livox/lidar_192_168_1_158），故加入 "lidar"
 # KEYWORDS = ["gnss", "imu", "encoder", "gps", "lidar_192_168_1_158"]
-KEYWORDS = ["gnss", "imu", "encoder", "gps", 'lidar', 'cam']
+KEYWORDS = ["gnss", "imu", "encoder", "gps", "localization", "odom", 'lidar', 'cam']
 # KEYWORDS = ["lidar"]
 # KEYWORDS = ["/cam0/image_raw/compressed", "/cam1/image_raw/compressed", "/cam2/image_raw/compressed", "/cam3/image_raw/compressed"]
 
@@ -234,6 +236,20 @@ def fmt_vel(msg, topic):
     return cols, vals
 
 
+def fmt_odometry(msg, topic):
+    """Odometry：输出 TUM 轨迹（timestamp tx ty tz qx qy qz qw）。
+
+    位置/姿态取自 msg.pose.pose（geometry_msgs/Pose），本身已是笛卡尔位姿，
+    无需 UTM 换算；第一列时间戳由主流程用 header.stamp 补上，因此该 topic 的
+    .txt 文件即为 TUM 格式轨迹。
+    """
+    p = msg.pose.pose.position
+    q = msg.pose.pose.orientation
+    cols = ["tx(m)", "ty(m)", "tz(m)", "qx", "qy", "qz", "qw"]
+    vals = [p.x, p.y, p.z, q.x, q.y, q.z, q.w]
+    return cols, vals
+
+
 def fmt_header_stamp(sec, nanosec):
     """std_msgs/Header.stamp(sec, nanosec) -> '秒.纳秒' 字符串（9 位纳秒）。"""
     sec = int(sec) + int(nanosec) // 1_000_000_000
@@ -268,6 +284,7 @@ FORMATTERS = {
     "gnss_comm/msg/GinsPvaMsg": fmt_llh_att,
     "gnss_comm/msg/GnssHdgMsg": fmt_hdg,
     "gnss_comm/msg/GnssVelMsg": fmt_vel,
+    "nav_msgs/msg/Odometry": fmt_odometry,
     "livox_ros_driver2/msg/CustomMsg": fmt_custom_msg,
 }
 
