@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""录制 ROS2 指定 topic 到 mcap 文件。
+"""录制 ROS2 指定 topic 到 MCAP 或 SQLite3 bag。
 
 配置（目录、topic 列表等）从 YAML 文件读取，见 record_config.yaml。
 本质是对 `ros2 bag record` 的封装：读取配置 -> 拼命令 -> 前台运行，
@@ -12,6 +12,7 @@
 
 import argparse
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -70,7 +71,7 @@ def build_command(cfg: dict, output_dir: str) -> List[str]:
     storage_config_file = cfg.get("storage_config_file", "") or ""
     if storage_config_file:
         cmd += ["--storage-config-file", storage_config_file]
-    else:
+    elif storage == "mcap":
         storage_preset_profile = cfg.get("storage_preset_profile", "") or ""
         if storage_preset_profile:
             cmd += ["--storage-preset-profile", storage_preset_profile]
@@ -85,6 +86,39 @@ def build_command(cfg: dict, output_dir: str) -> List[str]:
 
     cmd += topics
     return cmd
+
+
+def check_storage_available(storage: str) -> None:
+    """用实际执行的 ROS2 CLI 检查插件，避免 Python 环境与 CLI 环境不一致。"""
+    try:
+        result = subprocess.run(
+            ["ros2", "bag", "record", "--help"],
+            capture_output=True, text=True, timeout=15,
+        )
+    except FileNotFoundError:
+        sys.exit("[错误] 找不到 ros2 命令，请先 source ROS2 和工作空间的 setup.bash")
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        sys.exit(f"[错误] 无法检查 ROS2 存储插件: {exc}")
+    if result.returncode:
+        sys.exit(f"[错误] 无法读取 ros2 bag record 帮助:\n{result.stderr or result.stdout}")
+
+    match = re.search(r"(?:-s|--storage)\s+\{([^}]+)\}", result.stdout)
+    if not match:
+        print("[警告] 无法从 ROS2 帮助中识别存储插件，将由录制命令检查")
+        return
+    available = [name.strip() for name in match.group(1).split(",")]
+    if storage not in available:
+        message = (f"[错误] 当前 ROS2 环境不支持 storage={storage}，"
+                   f"可用插件: {', '.join(available)}")
+        if storage == "mcap":
+            message += (
+                "\n请在录制机器上安装对应 ROS2 发行版的 MCAP 插件（apt 安装的 ROS2）："
+                '\n  sudo apt update'
+                '\n  sudo apt install ros-${ROS_DISTRO}-rosbag2-storage-mcap'
+                '\n然后重新 source /opt/ros/${ROS_DISTRO}/setup.bash 和工作空间的 setup.bash。'
+                '\n或将录制配置改为 storage: "sqlite3"，脚本会跳过 MCAP 压缩预设。'
+            )
+        sys.exit(message)
 
 
 def resolve_output_dir(record_dir: str) -> str:
@@ -127,7 +161,7 @@ def run_record(cmd: List[str]) -> int:
 
 
 def main(argv: Optional[List[str]] = None) -> int:
-    parser = argparse.ArgumentParser(description="录制 ROS2 指定 topic 到 mcap 文件")
+    parser = argparse.ArgumentParser(description="录制 ROS2 指定 topic 到 MCAP 或 SQLite3 bag")
     parser.add_argument(
         "--config",
         default=DEFAULT_CONFIG,
@@ -139,6 +173,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     validate_config(cfg)
 
     print(f"[录制] 配置来源: {args.config}")
+    storage = cfg.get("storage", "mcap")
+    check_storage_available(storage)
+    print(f"[录制] 存储格式: {storage}")
+    if storage != "mcap" and cfg.get("storage_preset_profile"):
+        print("[录制] 已跳过 MCAP 专用 storage_preset_profile（当前使用 sqlite3）")
     print(f"[录制] 基础目录: {cfg['record_dir']}")
     print(f"[录制] 待录制 topics ({len(cfg['topics'])}):")
     for t in cfg["topics"]:

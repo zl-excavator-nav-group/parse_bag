@@ -19,7 +19,7 @@
 - 点云 / 图像按帧 dump（受脚本顶部 DUMP_MEDIA 一键开关 + POINTCLOUD_TOPICS /
   IMAGE_TOPICS + DUMP_START_TIME/DUMP_END_TIME 控制）：点云额外存 .pcd，图像存
   .jpg/.png（DUMP_IMG_FORMAT 选格式），文件名用 header.stamp（秒.纳秒）。
-- GPS 经纬度（Gpgga / GnssPosMsg）：lat, lon, alt。
+- GPS 经纬度（Gpgga）：lat, lon, alt；GNSS 位置（GnssPosMsg）：lat, lon, alt, pos_type。
 - GinsPvaMsg：lat, lon, alt, roll, pitch, yaw, vel_e, vel_n, vel_u, vel_yaw；
   同时把经纬度/姿态转到 UTM 坐标系，额外生成 <name>_utm.txt（车身 yaw）、
   <name>_vel_utm.txt（航向 vel_yaw）两份 TUM 文件，以及 <name>.geojson 轨迹文件；
@@ -30,11 +30,13 @@
 - GnssVelMsg：vel_e, vel_n, vel_u。
 - Odometry（nav_msgs/msg/Odometry）：直接输出 TUM 轨迹（timestamp tx ty tz qx qy qz qw），
   位置/姿态取自 pose.pose；同时生成 <topic>_timing.txt（header 时间 / 接收时间 / 延迟）。
+- SwingEncoderPosition（embodied_interfaces/msg/SwingEncoderPosition）：回转编码器角度（deg），
+  encoder_position_wrapped_deg（[-180,180)）与 encoder_position_0_360_deg（[0,360)）。
 - 其它匹配到但未单独定制的类型：通用展平（递归展开标量字段、跳过数组）。
 
 运行前必须先 source 好 ROS2 与当前工作空间的环境：
     source /opt/ros/humble/setup.bash
-    source ~/ws_excavator_nav/install/setup.bash
+    source ~/repo/ws_excavator_nav/install/setup.bash
 
 用法示例：
     python3 parse_bag.py
@@ -64,7 +66,7 @@ except ImportError as e:
     raise SystemExit(
         "无法导入 ROS2 Python 库，请先 source 环境：\n"
         "  source /opt/ros/humble/setup.bash\n"
-        "  source ~/ws_excavator_nav/install/setup.bash\n"
+        "  source ~/repo/ws_excavator_nav/install/setup.bash\n"
         f"原始错误: {e}"
     )
 
@@ -78,14 +80,16 @@ except Exception:
 # ======================== 配置（按需修改） ========================
 # 如果是mcap，直接到包目录；如果是sqlite3，指定 session 目录（含 metadata.yaml）
 # BAG_PATH = "/home/chenchen/Data/2t_ex_data/0909/sensor_records/sensor_2026-09-09_143549/bag/session/"
-BAG_PATH = "/home/chenchen/Data/2t_ex_data/rosbag2_2026_09_14-19_08_26/"
-OUTPUT_DIR = "/home/chenchen/code/parse_bag/output_0914"
+BAG_PATH = "/home/chenchen/Data/2t_new/rosbag2_2026_10_24-16_24_18/"
+OUTPUT_DIR = "/home/chenchen/code/parse_bag/output/2t_new/1024"
 
 # topic 名（小写）包含任一关键字才解析；留空表示全部解析
 # 点云 topic 名含 "lidar"（如 /livox/lidar_192_168_1_158），故加入 "lidar"
-# KEYWORDS = ["gnss", "imu", "encoder", "gps", "lidar_192_168_1_158"]
-KEYWORDS = ["gnss", "imu", "encoder", "gps", "localization", "odom", 'lidar', 'cam']
-# KEYWORDS = ["lidar"]
+KEYWORDS = ["gnss", "imu", "encoder", "gps", "lidar_192_168_1_158", 'lidar', 'localization']
+# KEYWORDS = ["gnss", "encoder", "gps", "localization", "odom"]
+# KEYWORDS = ["lidar", 'imu']
+# KEYWORDS = ["localization", "odom"]
+# KEYWORDS = ["/livox/lidar_192_168_1_158", "/livox/imu_192_168_1_158"]
 # KEYWORDS = ["/cam0/image_raw/compressed", "/cam1/image_raw/compressed", "/cam2/image_raw/compressed", "/cam3/image_raw/compressed"]
 
 
@@ -211,6 +215,18 @@ def fmt_llh(msg, topic):
     return ["lat(deg)", "lon(deg)", "alt(m)"], [msg.lat, msg.lon, msg.alt]
 
 
+def fmt_gnss_pos(msg, topic):
+    """GNSS 位置：lat(deg), lon(deg), alt(m), pos_type。
+
+    pos_type 为解算状态（gnss_comm::SolStatus）：0=无 1=SPP 2=RTD 3=PPS
+    4=RTK固定 5=RTK浮点 6=INS 9=多普勒。放在 alt 之后，保证下游 TUM/GeoJSON
+    仍按第 1/2/3 列读 lat/lon/alt。
+    """
+    cols = ["lat(deg)", "lon(deg)", "alt(m)", "pos_type"]
+    vals = [msg.lat, msg.lon, msg.alt, msg.pos_type]
+    return cols, vals
+
+
 def fmt_llh_att(msg, topic):
     """GPS 经纬度 + 姿态角 + 速度：lat, lon, alt, roll, pitch, yaw, vel_e/n/u, vel_yaw。"""
     cols = ["lat(deg)", "lon(deg)", "alt(m)",
@@ -250,6 +266,18 @@ def fmt_odometry(msg, topic):
     return cols, vals
 
 
+def fmt_swing_encoder(msg, topic):
+    """回转编码器角度（embodied_interfaces/msg/SwingEncoderPosition）。
+
+    单位 deg，两个字段是同一个"已标定回转角" wrap 到不同区间：
+    - encoder_position_wrapped_deg: [-180, 180)，做角差/增量/插值时用（无 0/360 跳变）。
+    - encoder_position_0_360_deg:   [0, 360)，做方位角显示时用。
+    """
+    cols = ["encoder_position_wrapped_deg(deg)", "encoder_position_0_360_deg(deg)"]
+    vals = [msg.encoder_position_wrapped_deg, msg.encoder_position_0_360_deg]
+    return cols, vals
+
+
 def fmt_header_stamp(sec, nanosec):
     """std_msgs/Header.stamp(sec, nanosec) -> '秒.纳秒' 字符串（9 位纳秒）。"""
     sec = int(sec) + int(nanosec) // 1_000_000_000
@@ -280,11 +308,12 @@ def fmt_generic(msg, topic):
 FORMATTERS = {
     "sensor_msgs/msg/Imu": fmt_imu,
     "nmea_msgs/msg/Gpgga": fmt_llh,
-    "gnss_comm/msg/GnssPosMsg": fmt_llh,
+    "gnss_comm/msg/GnssPosMsg": fmt_gnss_pos,
     "gnss_comm/msg/GinsPvaMsg": fmt_llh_att,
     "gnss_comm/msg/GnssHdgMsg": fmt_hdg,
     "gnss_comm/msg/GnssVelMsg": fmt_vel,
     "nav_msgs/msg/Odometry": fmt_odometry,
+    "embodied_interfaces/msg/SwingEncoderPosition": fmt_swing_encoder,
     "livox_ros_driver2/msg/CustomMsg": fmt_custom_msg,
 }
 

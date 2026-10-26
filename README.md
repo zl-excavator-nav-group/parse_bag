@@ -66,7 +66,7 @@ python3 parse_bag.py --bag <bag目录> --dump-media \
 | --- | --- | --- |
 | `sensor_msgs/msg/Imu`（IMU） | `acc_x acc_y acc_z gyro_x gyro_y gyro_z` | 加速度统一 m/s²，角速度 rad/s |
 | `nmea_msgs/msg/Gpgga` | `lat lon alt` | 经纬度（deg）+ 高程（m） |
-| `gnss_comm/msg/GnssPosMsg` | `lat lon alt` | 经纬度 + 高程 |
+| `gnss_comm/msg/GnssPosMsg` | `lat lon alt pos_type` | 经纬度 + 高程 + 解算状态（SolStatus） |
 | `gnss_comm/msg/GinsPvaMsg` | `lat lon alt roll pitch yaw vel_e vel_n vel_u vel_yaw` | 经纬度 + 姿态角 + 速度；另生成 `*_utm.txt` / `*_vel_utm.txt`（TUM）与 `*.geojson` |
 | `gnss_comm/msg/GnssHdgMsg` | `hdg_type baseline heading pitch` | 航向解状态 + 基线 + 航向/俯仰；与位置 topic 匹配后另生成 `*_hdg_utm.txt` / `*_hdg_odom.txt` / `*.geojson` |
 | `gnss_comm/msg/GnssVelMsg` | `vel_e vel_n vel_u` | ENU 速度 |
@@ -187,6 +187,32 @@ DUMP_IMG_FORMAT = "jpg"                # 图像格式 jpg / png
 | `--start-time` | 时间范围起点（秒，epoch），只 dump 此后的点云/图像帧 | `DUMP_START_TIME` |
 | `--end-time` | 时间范围终点（秒，epoch），只 dump 此前的点云/图像帧 | `DUMP_END_TIME` |
 | `--img-format` | 图像输出格式 `jpg`/`png` | `DUMP_IMG_FORMAT` |
+
+## 录制 bag
+
+`record_bag.py` 读取 `record_config.yaml`，运行 `ros2 bag record`；
+`parse_bag.py` 用于解析已有 bag，支持 MCAP 和 SQLite3。
+
+```bash
+python3 record_bag.py --config record_config.yaml
+```
+
+若报 `invalid choice: 'mcap' (choose from 'sqlite3', ...)`，说明当前 ROS2 环境
+未识别到 MCAP 存储插件。对于通过 apt 安装的 ROS2，在录制机器上执行
+（先 source 对应发行版，确保 `ROS_DISTRO` 已设置）：
+
+```bash
+sudo apt update
+sudo apt install ros-${ROS_DISTRO}-rosbag2-storage-mcap
+source /opt/ros/${ROS_DISTRO}/setup.bash
+# 然后 source 你的工作空间 install/setup.bash
+ros2 bag record --help  # 确认 -s 的可选值包含 mcap
+```
+
+也可将 `record_config.yaml` 的 `storage` 改为 `"sqlite3"` 后录制 `.db3`，
+脚本会自动忽略 MCAP 专用的 `storage_preset_profile`。
+`storage_config_file` 若非空仍会传给所选插件，切换格式时需清空或换成对应格式的配置。
+脚本在创建输出目录之前检查插件；若指定插件不可用，会报错并给出处理提示。
 
 ## 说明
 
