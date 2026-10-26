@@ -41,7 +41,7 @@ import numpy as np
 from scipy.spatial.transform import Rotation
 
 # tools/ 下没有 __init__.py，不是包，直接把它加进 sys.path 再导入。
-# （my_test_tools 自己会把仓库根加进 sys.path 来 import utils，导入是安全的。）
+# （my_test_tools 会把 tools/ 加进 sys.path 来 import utils，导入是安全的。）
 sys.path.append(str(Path(__file__).resolve().parent / "tools"))
 from my_test_tools import xyzrpy_deg_to_se3  # noqa: E402
 

@@ -135,8 +135,8 @@ def check_ins_yaw(raw_ins_tum_path):
 
 if __name__ == '__main__':
     # 传入INS轨迹的tum文件路径
-    tum_path = '/home/chenchen/code/parse_bag/output/2t/0922/rosbag2_2026_09_22-09_26_35_parsed_res/gps_pos_hdg_utm.txt'
-    cal_speedgyro_from_tum(tum_path, 100)
+    tum_path = '/home/chenchen/code/parse_bag/output/145_new/1024/rosbag2_2026_10_24-09_33_16_parsed_res/gps_pos_hdg_utm.txt'
+    cal_speedgyro_from_tum(tum_path, 1)
     deg = check_ins_yaw(tum_path)
     print(deg)
 

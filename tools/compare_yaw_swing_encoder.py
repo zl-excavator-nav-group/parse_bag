@@ -15,13 +15,13 @@ import matplotlib.pyplot as plt
 
 # ======================== 配置（按需修改） ========================
 # 组合定位位姿轨迹文件（TUM 格式）
-GPS_FILE = "/home/chenchen/code/parse_bag/output/rosbag2_2026_08_20-08_27_47_parsed_res/gps_pos_hdg_utm.txt"
+GPS_FILE = "/home/chenchen/code/parse_bag/output_0827/rosbag2_2026_08_27-08_53_39_parsed_res/gnss_odom.txt"
 
 # 回转编码器状态文件
-ENCODER_FILE = "/home/chenchen/code/parse_bag/output/rosbag2_2026_08_20-08_27_47_parsed_res/excavator_swing_encoder_state.txt"
+ENCODER_FILE = "/home/chenchen/code/parse_bag/output_0827/rosbag2_2026_08_27-08_53_39_parsed_res/excavator_swing_encoder_state.txt"
 
 # 编码器文件中角度所在列（0 起始索引，对应 SwingEncoderState 消息展平后的列）。
-# 该文件每行 22 列（第 0 列为 parse_bag 附加的 bag 接收时间戳），其中第 9 / 10 / 11 列：
+# 该文件每行 22 列（第 0 列为 parse_bag 附加的 header 时间戳），其中第 9 / 10 / 11 列：
 #   9  -> encoder_position_deg         （相对回转角，范围约 -143 ~ +216，未回绕）
 #   10 -> encoder_position_wrapped_deg （= col9 回绕到 [-180, 180]）
 #   11 -> encoder_position_rad         （字段名是弧度，实际存的是 [0, 360) 度 = col9 mod 360）

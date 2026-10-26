@@ -3,7 +3,7 @@
 import math
 import os
 import sys
-sys.path.append("..")
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 import re
 import utils
 import pandas as pd
@@ -45,9 +45,9 @@ def compare_imu_data():
     #             '/media/chenchenwei/199/ODO_DATASET/car3_imu_check/car3_IMU_fan_on/ramps/Tele15#_20240701-163345_992_6_imu.txt']
     # all_file = ['/media/chenchenwei/199/ODO_DATASET/car3_imu_check/car3_IMU_fan_off/static/imu/20240702-164107_803/ASM330#_20240702-164107_803_2_imu.txt',
     #             '/media/chenchenwei/199/ODO_DATASET/car3_imu_check/car3_IMU_fan_off/static/Tele15#_20240702-164107_803_6_imu.txt']
-    all_file = ['/home/chenchen/code/parse_bag/output/rosbag2_2026_08_20-09_02_24_parsed_res/gps_imu_raw_base_link.txt',
-                '/home/chenchen/code/parse_bag/output/rosbag2_2026_08_20-09_02_24_parsed_res/livox_imu_192_168_1_158_base_link.txt']
-    file_tag = ['gps_imu_raw', 'livox_imu_192_168_1_158']
+    all_file = ['/home/chenchen/code/parse_bag/output_0916/rosbag2_2026_09_16-10_35_52_parsed_res/livox_imu_192_168_1_181_base_link.txt',
+                "/home/chenchen/repo/ws_excavator_nav/src/localization/fusion_slam/log_res/test_0916/Chassis_velocity_gyro.txt"]
+    file_tag = ['livox_imu_192_168_1_181', 'Chassis_velocity_gyro']
     # 加载所有的df
     df_list = []
     for file_path in all_file:

@@ -70,8 +70,9 @@ except ImportError as e:
         f"原始错误: {e}"
     )
 
-# utils.py（pva -> UTM/TUM 换算用）依赖 utm / geojson / scipy 等；
+# utils.py（pva -> UTM/TUM 换算用）已移到 tools/，依赖 utm / geojson / scipy 等；
 # 未安装时置 None，脚本仍可解析其它消息，只是跳过 pva 的 TUM 生成。
+sys.path.append(str(Path(__file__).resolve().parent / "tools"))
 try:
     import utils
 except Exception:
@@ -80,8 +81,8 @@ except Exception:
 # ======================== 配置（按需修改） ========================
 # 如果是mcap，直接到包目录；如果是sqlite3，指定 session 目录（含 metadata.yaml）
 # BAG_PATH = "/home/chenchen/Data/2t_ex_data/0909/sensor_records/sensor_2026-09-09_143549/bag/session/"
-BAG_PATH = "/home/chenchen/Data/2t_new/rosbag2_2026_10_24-16_24_18/"
-OUTPUT_DIR = "/home/chenchen/code/parse_bag/output/2t_new/1024"
+BAG_PATH = "/home/chenchen/Data/145_new/rosbag2_2026_10_24-09_33_16/"
+OUTPUT_DIR = "/home/chenchen/code/parse_bag/output/145_new/1024"
 
 # topic 名（小写）包含任一关键字才解析；留空表示全部解析
 # 点云 topic 名含 "lidar"（如 /livox/lidar_192_168_1_158），故加入 "lidar"
